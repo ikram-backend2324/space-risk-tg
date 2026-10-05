@@ -88,6 +88,16 @@ for lang, values in EXTRA.items():
 for _lang, _usage in {'uz':'/broadcast matn','en':'/broadcast text','ru':'/broadcast текст','kaa':'/broadcast tekst'}.items():
     L[_lang]['broadcast_usage'] = _usage
 
+# Localized feedback for every potentially slow operation.
+PROGRESS_TEXT = {
+    'uz': ['🧠 AI javob tayyorlamoqda. Iltimos, kuting…', '⏳ Maʼlumotlar yuklanmoqda. Iltimos, kuting…', '📊 Grafik va natija tayyorlanmoqda…', '⏳ Oldingi soʻrovingiz bajarilmoqda. Natijani kuting, keyin yangi buyruq yuboring.', '📣 Xabarlar yuborilmoqda…'],
+    'en': ['🧠 AI is generating your answer. Please wait…', '⏳ Loading data. Please wait…', '📊 Preparing the chart and result…', '⏳ Your previous request is still processing. Wait for the result before sending another command.', '📣 Sending messages…'],
+    'ru': ['🧠 ИИ готовит ответ. Пожалуйста, подождите…', '⏳ Загружаем данные. Пожалуйста, подождите…', '📊 Готовим график и результат…', '⏳ Ваш предыдущий запрос ещё выполняется. Дождитесь результата, затем отправьте новую команду.', '📣 Отправляем сообщения…'],
+    'kaa': ['🧠 Jasalma intellekt juwap tayarlamaqta. Ótinish, kútiń…', '⏳ Maǵlıwmatlar júklenbekte. Ótinish, kútiń…', '📊 Grafik hám nátiyje tayarlanbaqta…', '⏳ Aldınǵı sorawıńız orınlanbaqta. Nátiyjeni kútiń, soń jańa buyrıq jiberiń.', '📣 Xabarlar jiberilmekte…'],
+}
+for _lang, _values in PROGRESS_TEXT.items():
+    L[_lang].update(dict(zip(['loading_ai', 'loading_data', 'loading_chart', 'busy', 'loading_broadcast'], _values)))
+
 NAMES = {
 'uz': 'Toshkent shahri|Toshkent viloyati|Andijon viloyati|Namangan viloyati|Fargʻona viloyati|Sirdaryo viloyati|Jizzax viloyati|Samarqand viloyati|Qashqadaryo viloyati|Surxondaryo viloyati|Buxoro viloyati|Navoiy viloyati|Xorazm viloyati|Qoraqalpogʻiston Respublikasi'.split('|'),
 'en': 'Tashkent City|Tashkent Region|Andijan Region|Namangan Region|Fergana Region|Syrdarya Region|Jizzakh Region|Samarkand Region|Kashkadarya Region|Surkhandarya Region|Bukhara Region|Navoi Region|Khorezm Region|Republic of Karakalpakstan'.split('|'),
@@ -330,11 +340,21 @@ class Guard(BaseMiddleware):
     def __init__(self, app: App):
         self.app=app
         self.last: dict[int,float]={}
+        self.busy: set[int] = set()
+        self.languages: dict[int,str] = {}
     async def __call__(self, handler, event, data):
         if not event.from_user:
             return
         uid=event.from_user.id
+        lang = self.languages.get(uid, 'uz')
+        if uid in self.busy:
+            if isinstance(event, CallbackQuery):
+                await event.answer(tr(lang, 'busy'), show_alert=True)
+            else:
+                await event.answer(tr(lang, 'busy'))
+            return
         lang=await self.app.user(uid)
+        self.languages[uid] = lang
         data.update(app=self.app,lang=lang)
         text=event.text if isinstance(event,Message) else ''
         cb=None
@@ -353,7 +373,53 @@ class Guard(BaseMiddleware):
             self.last[uid]=now
             if len(self.last)>5000:
                 self.last={k:v for k,v in self.last.items() if now-v<120}
-        return await handler(event,data)
+        command = (text or '').split('@')[0].split(' ')[0]
+        current_state = await data['state'].get_state() if data.get('state') else None
+        progress_key = None
+        if current_state == Step.chat.state and text and not text.startswith('/') and text not in [tr(l,k) for l in L for k in ('new','regions','history','language','about','website')]:
+            progress_key = 'loading_ai'
+        elif is_start or command in ('/regions','/history','/stats') or text in [tr(l,k) for l in L for k in ('regions','history')]:
+            progress_key = 'loading_data'
+        elif cb and cb.action in ('view','page','ask','back_region'):
+            progress_key = 'loading_chart' if cb.action == 'view' else 'loading_data'
+        elif command == '/broadcast' and uid in self.app.admins:
+            progress_key = 'loading_broadcast'
+        self.busy.add(uid)
+        status = None
+        ticker = None
+        try:
+            if progress_key:
+                target = event.message if isinstance(event, CallbackQuery) else event
+                if isinstance(event, CallbackQuery):
+                    await event.answer()
+                status = await target.answer(tr(lang, progress_key))
+                ticker = asyncio.create_task(activity(status, lang, progress_key))
+            return await handler(event,data)
+        except Exception as exc:
+            log.error('Request failed: %s', type(exc).__name__)
+            target = event.message if isinstance(event, CallbackQuery) else event
+            with contextlib.suppress(Exception):
+                await target.answer(tr(lang, 'error'))
+        finally:
+            if ticker:
+                ticker.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await ticker
+            if status:
+                with contextlib.suppress(Exception):
+                    await status.delete()
+            self.busy.discard(uid)
+
+async def activity(message: Message, lang: str, key: str):
+    """Keep Telegram's typing indicator and a visible localized waiting status."""
+    started = time.monotonic()
+    while True:
+        with contextlib.suppress(Exception):
+            await message.bot.send_chat_action(message.chat.id, 'typing')
+            seconds = int(time.monotonic() - started)
+            if seconds:
+                await safe_edit(message, tr(lang, key) + f' ⏱ {seconds}s')
+        await asyncio.sleep(4)
 
 async def safe_edit(message: Message, text: str, markup=None):
     try:
@@ -383,7 +449,7 @@ async def set_language(query: CallbackQuery,callback_data: CB,state: FSMContext,
 async def region_screen(message: Message,state: FSMContext,app: App,lang: str,edit: bool=False):
     data=await state.get_data()
     session=data['session']
-    regions=await app.regions(lang)
+    regions=await asyncio.wait_for(app.regions(lang), timeout=65)
     buttons=[button(level(r['score'],lang).split()[0]+' '+r['name'],'region',r['slug'],session) for r in regions]
     rows=[buttons[i:i+2] for i in range(0,len(buttons),2)]
     await state.set_state(Step.region)
@@ -509,6 +575,7 @@ async def generate(query: CallbackQuery,callback_data: CB,state: FSMContext,app:
         await query.answer(tr(lang,'empty'),show_alert=True);return
     await state.set_state(Step.generating)
     await query.answer()
+    await safe_edit(query.message, tr(lang, 'wait3'))
     progress=asyncio.create_task(animate(query.message,lang))
     try:
         async with app.forecast_gate:
@@ -518,8 +585,9 @@ async def generate(query: CallbackQuery,callback_data: CB,state: FSMContext,app:
             db.add(forecast);await db.commit();await db.refresh(forecast)
         progress.cancel()
         with contextlib.suppress(asyncio.CancelledError):await progress
-        await query.message.delete()
+        await safe_edit(query.message, tr(lang, 'loading_chart'))
         await show_result(query.message,forecast,app)
+        await query.message.delete()
     except Exception as exc:
         log.error('Forecast operation failed: %s',type(exc).__name__)
         await query.message.answer(tr(lang,'error'))
@@ -533,7 +601,7 @@ async def generate(query: CallbackQuery,callback_data: CB,state: FSMContext,app:
 @router.message(F.text.in_([tr(l,'regions') for l in L]))
 async def ranking(message: Message,app: App,lang: str,state: FSMContext):
     await state.clear()
-    rows=sorted(await app.regions(lang),key=lambda r:r['score'],reverse=True)
+    rows=sorted(await asyncio.wait_for(app.regions(lang), timeout=65),key=lambda r:r['score'],reverse=True)
     text=tr(lang,'regions')+'\n\n'+'\n\n'.join(f"{i}. {level(r['score'],lang).split()[0]} {r['name']} — {r['score']}/100\n   {', '.join(r['top'])}" for i,r in enumerate(rows,1))
     await send_text(message,text)
 
@@ -659,7 +727,9 @@ async def run():
     cfg=Settings()
     app=App(cfg)
     bot=Bot(cfg.bot_token.get_secret_value(),default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp=Dispatcher(events_isolation=SimpleEventIsolation())
+    dp=Dispatcher()
+    # Guard rejects overlapping user requests immediately instead of queuing
+    # commands behind a slow AI call. This is a single-instance deployment.
     guard=Guard(app)
     router.message.outer_middleware(guard)
     router.callback_query.outer_middleware(guard)
