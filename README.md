@@ -27,7 +27,7 @@ Use a separate bot web service; SITE_URL points to the existing Django site, whe
 5. Set BOT_TOKEN, MODE=webhook, SITE_URL=https://space-risk.onrender.com, WEBHOOK_BASE_URL=https://YOUR-BOT-SERVICE.onrender.com.
 6. Generate WEBHOOK_SECRET locally: `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Copy its output into Render's environment settings.
 7. Set DATABASE_URL to your PostgreSQL connection URL. Local SQLite on an ephemeral Render filesystem will not persist across restarts or deployments.
-8. Optionally set OPENROUTER_API_KEY, OPENROUTER_MODEL and ADMIN_IDS (comma-separated Telegram IDs).
+8. Optionally set OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_MODEL_KAA (a stronger model for Karakalpak chat) and ADMIN_IDS (comma-separated Telegram IDs).
 9. Health check path: `/`. Set a Render-supported Python 3.10 patch release or newer Python version in the service settings.
 10. Deploy and send `/start` to the bot. Do not simultaneously run polling with the same token.
 
@@ -44,3 +44,8 @@ Forecast JSON is validated, numbers are clamped and all AI text is escaped befor
 
 ## Architecture
 Settings → SQLAlchemy async storage → localized aiogram Router/FSM → website API + deterministic engine + OpenRouter commentary → matplotlib image → Telegram result. Aiohttp serves webhook requests and the health endpoint in webhook mode.
+
+## Consistency with the website and Android app
+- Forecast texts (summary, key drivers, recommendations) come from the website's hand-checked catalog via `GET /api/v1/scenario/?region=&horizon=&hazards=&lang=`, so the bot, website and app say the same thing in all 4 languages. If the site is unreachable, the bot's built-in text is used.
+- Karakalpak never uses AI-written forecast text (models mix it with Uzbek/Kazakh); Karakalpak chat answers get a style guide and can use `OPENROUTER_MODEL_KAA`.
+- Each hazard has the same colour as on the website/app (charts: points and labels); "today" is grey/dashed, the forecast is cyan.
