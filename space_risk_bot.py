@@ -198,6 +198,11 @@ class CB(CallbackData,prefix='sr'):
 
 def button(text: str, action: str, value: str='-', session: str='-') -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text,callback_data=CB(action=action,value=value,session=session).pack())
+# Android app download (same APK the website serves at /download/android/).
+ANDROID = {'uz': '📱 Android ilovani yuklab olish', 'en': '📱 Download the Android app', 'ru': '📱 Скачать Android-приложение', 'kaa': '📱 Android qosımshanı júklep alıw'}
+def links(lang: str, site_url: str) -> list:
+    return [[InlineKeyboardButton(text=tr(lang,'website'),url=site_url)],
+            [InlineKeyboardButton(text=ANDROID.get(lang,ANDROID['uz']),url=site_url.rstrip('/')+'/download/android/')]]
 def inline(rows: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 def menu(lang: str) -> ReplyKeyboardMarkup:
@@ -699,11 +704,11 @@ async def finish(query: CallbackQuery,state: FSMContext,lang: str):
 @router.message(F.text.in_([tr(l,'about') for l in L]))
 async def about(message: Message,app: App,lang: str,state: FSMContext):
     await state.clear()
-    await message.answer(tr(lang,'welcome')+'\n\n'+tr(lang,'help')+'\n\n'+', '.join(SOURCES)+'\n\n'+tr(lang,'disclaimer'),reply_markup=inline([[InlineKeyboardButton(text=tr(lang,'website'),url=app.cfg.site_url)]]))
+    await message.answer(tr(lang,'welcome')+'\n\n'+tr(lang,'help')+'\n\n'+', '.join(SOURCES)+'\n\n'+tr(lang,'disclaimer'),reply_markup=inline(links(lang,app.cfg.site_url)))
 
 @router.message(F.text.in_([tr(l,'website') for l in L]))
 async def website(message: Message,app: App,lang: str):
-    await message.answer(tr(lang,'website'),reply_markup=inline([[InlineKeyboardButton(text=tr(lang,'website'),url=app.cfg.site_url)]]))
+    await message.answer(tr(lang,'website'),reply_markup=inline(links(lang,app.cfg.site_url)))
 
 @router.message(Command('stats'))
 async def stats(message: Message,app: App,lang: str):
